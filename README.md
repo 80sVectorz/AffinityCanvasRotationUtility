@@ -2,7 +2,7 @@
 
 # Scroll Tool
 
-![Example](https://github.com/80sVectorz/scroll_tool/blob/master/images/example.gif?raw=true)
+![Example](https://github.com/80sVectorz/scroll_tool/blob/main/images/example.gif?raw=true)
 
 A program that allows you to emulate the scroll wheel with a pointer device.
 
