@@ -7,6 +7,7 @@ import wx
 import time
 import numpy as np
 from enum import Enum, auto
+import sys
 
 TWO_PI = np.pi*2
 
@@ -31,6 +32,18 @@ class ScrollToolInteractionType(Enum):
     SCROLL_WHEEL = auto()
     CLOSE_BUTTON = auto()
 
+def lerp(a,b,t):
+    return a+(b-a)*t
+
+def inv_lerp(a,b,v):
+    return (v-a)/(b-a)
+
+def ease_circ(x):
+    return np.sqrt(1-np.pow(1-x,2))
+
+def angle_unwrap(a):
+    return a-TWO_PI*(a//TWO_PI)
+
 class ScrollToolFrame(wx.Frame):
     def __init__(
         self,
@@ -41,17 +54,22 @@ class ScrollToolFrame(wx.Frame):
 
         size: tuple[int, int] = (500, 500),
         radius: int = 400, # Total radius of the scroll visuals
+        border_thickness_fac: float = 0.05, # Width of ring border as a percentage of total ring thickness
 
-        hole_pct: float = 0.75, # Percentage of total radius that the center hole should take up
+        hole_fac: float = 0.75, # Percentage of total radius that the center hole should take up
 
         n_divisions: int = 20, # How many segments the ring should be divided up in
 
-        selector_size_pct: float = 0.05, # Angular range the selector should fill up
-        selector_margin_pct: float = 0.1, # Percentage of ring radius that should be subtracted from the selector as a margin
+        selector_size_fac: float = 0.05, # Angular range the selector should fill up
+        selector_margin_fac: float = 0.1, # Percentage of ring radius that should be subtracted from the selector as a margin
 
-        close_button_radius_pct: float = 0.5, # Percentage of hole radius that the close button should take up
+        selector_rounded_corners: bool = True, # Wether or not the selector should have rounded corners
+        selector_rounding_fac_h: float = 0.2, # Total horizontal space taken up by rounded corners
+        selector_rounding_fac_v: float = 0.2, # Total vertical space taken up by rounded corners
 
-        dead_zone_radius_pct: float = 0.75, # The radius of the center dead-zone as a percentage of the hole radius
+        close_button_radius_fac: float = 0.5, # Percentage of hole radius that the close button should take up
+
+        dead_zone_radius_fac: float = 0.5, # The radius of the center dead-zone as a percentage of the hole radius
     ):
         wx.Frame.__init__(
             self,
@@ -81,6 +99,7 @@ class ScrollToolFrame(wx.Frame):
         self.Bind(wx.EVT_LEFT_DOWN, self.on_click_down)
         self.Bind(wx.EVT_LEFT_UP, self.on_click_up)
         self.Bind(wx.EVT_MOTION, self.on_motion)
+        self.Bind(wx.EVT_MOUSE_CAPTURE_LOST, self.on_mouse_capture_lost)
 
         self.size = size
         self.width = size[0]
@@ -95,49 +114,55 @@ class ScrollToolFrame(wx.Frame):
 
         self.start_pos = start_pos
 
-        self.radius = radius
-        self.total_radius_squared = radius**2
-        self.hole_pct = hole_pct
-        hole_radius = (radius*hole_pct)
-        self.hole_radius_squared = hole_radius**2
+        self.total_radius = radius
+        self.hole_fac = hole_fac
+        hole_radius = (radius*hole_fac)
+        self.hole_radius = hole_radius
         ring_thickness = radius-hole_radius
-        selector_margin = ring_thickness*selector_margin_pct
-        self.selector_margin_inner_squared = (hole_radius+selector_margin)**2
-        self.selector_margin_outer_squared = (radius-selector_margin)**2
+        self.ring_thickness = ring_thickness
+        selector_margin = ring_thickness*selector_margin_fac
+        self.selector_edge_v_inner = hole_radius+selector_margin
+        self.selector_edge_v_outer = radius-selector_margin
+        self.selector_thickness = self.selector_edge_v_outer-self.selector_edge_v_inner
+        self.selector_rounded_corners = selector_rounded_corners
+        self.selector_rounding_fac_v = selector_rounding_fac_h
+        self.selector_rounding_fac_h = selector_rounding_fac_v
         self.nudge_angle = TWO_PI/n_divisions
-        self.selector_size = TWO_PI*selector_size_pct
-        close_button_radius = hole_radius*close_button_radius_pct
-        self.close_button_radius_squared = close_button_radius**2
-        dead_zone_radius = hole_radius*dead_zone_radius_pct
-        self.dead_zone_radius_squared = dead_zone_radius**2
+        self.selector_size = TWO_PI*selector_size_fac
+        close_button_radius = hole_radius*close_button_radius_fac
+        self.close_button_radius = close_button_radius
+        dead_zone_radius = hole_radius*dead_zone_radius_fac
+        self.dead_zone_radius = dead_zone_radius
 
         w,h = self.size
 
-        edge_size = 0.5
+        aa_edge_size = 0.5
+        border_size = ring_thickness*border_thickness_fac
 
         pixel_coords = np.mgrid[-w/2:w/2,-h/2:h/2]
         angles = np.atan2(pixel_coords[0],pixel_coords[1])+np.pi
-        squared_distances = pixel_coords[0]**2+pixel_coords[1]**2
-        ring_mask = (squared_distances < self.total_radius_squared)*(squared_distances > self.hole_radius_squared)
-        ring_edge_mask = ring_mask^(squared_distances < (radius-edge_size)**2)*(squared_distances > (hole_radius+edge_size)**2)
-        hole_mask = (squared_distances < self.hole_radius_squared)
-        close_button_mask = (squared_distances < self.close_button_radius_squared)
-        close_button_edge_mask = close_button_mask^(squared_distances < (close_button_radius-edge_size)**2)
-
-        bg_colors = ((100,100,125),(90,90,110))
-        bg_colors = [np.array(c) for c in bg_colors]
-        selector_color = np.array((100,100,200))
+        distances = np.sqrt(pixel_coords[0]**2+pixel_coords[1]**2)
+        ring_mask = (distances < self.total_radius)*(distances > self.hole_radius)
+        ring_aa_mask = ring_mask^(distances < (radius-aa_edge_size))*(distances > (hole_radius+aa_edge_size))
+        ring_border_mask = ring_mask^(distances < (radius-border_size))*(distances > (hole_radius+border_size))
+        hole_mask = (distances < self.hole_radius)
+        close_button_mask = (distances < self.close_button_radius)
+        close_button_aa_mask = close_button_mask^(distances < (close_button_radius-aa_edge_size))
 
         self.angles = angles
-        self.squared_distances = squared_distances
+        self.distances = distances
         self.ring_mask = ring_mask
-        self.ring_edge_mask = ring_edge_mask
+        self.ring_border_mask = ring_border_mask
+        self.ring_aa_mask = ring_aa_mask
         self.hole_mask = hole_mask
         self.close_button_mask = close_button_mask
-        self.close_button_edge_mask = close_button_edge_mask
+        self.close_button_aa_mask = close_button_aa_mask
 
-        self.bg_colors = bg_colors
-        self.selector_color = selector_color
+        self.border_color = np.array((16, 16, 20))
+        bg_colors = ((26, 27, 38),(22, 22, 30))
+        self.bg_colors = [np.array(c) for c in bg_colors]
+        self.selector_color = np.array((100,100,200))
+        self.close_button_color = np.array((52, 54, 76))
 
         self.current_interaction_type = None
         self.awaiting_left_up = False
@@ -154,7 +179,7 @@ class ScrollToolFrame(wx.Frame):
         y-=self.height/2
 
         event_processed = False
-        if self.total_radius_squared > (x**2+y**2) > self.hole_radius_squared:
+        if self.total_radius > np.sqrt(x**2+y**2) > self.hole_radius:
             self.drag_angle = np.atan2(y,x)+np.pi
             self.prev_drag_angle = self.drag_angle
             self.prev_drag_pos = (x,y)
@@ -162,7 +187,7 @@ class ScrollToolFrame(wx.Frame):
             win32gui.SetWindowLong(self.hwnd,win32con.GWL_EXSTYLE, self.window_long|win32con.WS_EX_TRANSPARENT)
             event_processed = True
 
-        elif (x**2+y**2) < self.close_button_radius_squared:
+        elif np.sqrt(x**2+y**2) < self.close_button_radius:
             self.current_interaction_type = ScrollToolInteractionType.CLOSE_BUTTON
             event_processed = True
             
@@ -177,7 +202,7 @@ class ScrollToolFrame(wx.Frame):
         if self.hovering_over_close_btn:
             wx.Window.ReleaseMouse(self)
             self.Refresh(True)
-            exit()
+            sys.exit(0)
 
         win32gui.SetWindowLong(self.hwnd,win32con.GWL_EXSTYLE, self.window_long)
         self.awaiting_left_up = False
@@ -189,7 +214,7 @@ class ScrollToolFrame(wx.Frame):
         x-=self.width/2
         y-=self.height/2
 
-        hovering = (x**2+y**2) < self.close_button_radius_squared
+        hovering = np.sqrt(x**2+y**2) < self.close_button_radius
         if hovering != self.hovering_over_close_btn:
             self.hovering_over_close_btn = hovering
             self.Refresh(True)
@@ -197,11 +222,11 @@ class ScrollToolFrame(wx.Frame):
         if not self.awaiting_left_up:
             return
 
-        if self.current_interaction_type == ScrollToolInteractionType.SCROLL_WHEEL and (x**2+y**2) > self.dead_zone_radius_squared:
+        if self.current_interaction_type == ScrollToolInteractionType.SCROLL_WHEEL and np.sqrt(x**2+y**2) > self.dead_zone_radius:
             angle = np.atan2(y,x)+np.pi
             
             prev_x,prev_y = self.prev_drag_pos
-            if (prev_x**2+prev_y**2) < self.dead_zone_radius_squared:
+            if np.sqrt(prev_x**2+prev_y**2) < self.dead_zone_radius:
                 self.prev_drag_angle = angle
 
             if self.prev_drag_angle-angle > 1*np.pi:
@@ -220,6 +245,11 @@ class ScrollToolFrame(wx.Frame):
             self.prev_drag_angle = angle
             self.prev_drag_pos = (x,y)
             self.Refresh(True)
+
+    def on_mouse_capture_lost(self,event):
+        win32gui.SetWindowLong(self.hwnd,win32con.GWL_EXSTYLE, self.window_long)
+        self.awaiting_left_up = False
+        self.Refresh(True)
 
     def send_scroll_wheel_nudge(self,nudges):
         delta = win32con.WHEEL_DELTA * int(nudges)
@@ -258,38 +288,77 @@ class ScrollToolFrame(wx.Frame):
         self.time = time.time_ns() - self.start_time
 
         angles = self.angles 
-        squared_distances = self.squared_distances
+        distances = self.distances
         ring_mask = self.ring_mask
-        ring_edge_mask = self.ring_edge_mask
+        ring_border_mask = self.ring_border_mask
+        ring_aa_mask = self.ring_aa_mask
         hole_mask = self.hole_mask
         close_button_mask = self.close_button_mask
-        close_button_edge_mask = self.close_button_edge_mask
+        close_button_aa_mask = self.close_button_aa_mask
+
+        border_color = self.border_color
         bg_colors = self.bg_colors
         selector_color = self.selector_color
+        close_button_color = self.close_button_color
 
         cdata = np.zeros((h,w,3))[:,:]+bg_colors[0]
         cdata[angles/self.nudge_angle%2<1] = bg_colors[1]
-        cdata[close_button_mask] = bg_colors[0]
+        cdata[close_button_mask] = close_button_color
+        cdata[ring_border_mask] = border_color
 
         adata = np.zeros((h,w))
         adata[ring_mask] = 255 
         adata[hole_mask] = 1
         adata[close_button_mask] = 100 if self.hovering_over_close_btn else 50
-        
-        adata[ring_edge_mask|close_button_edge_mask]*=0.75
+        adata[ring_aa_mask|close_button_aa_mask]*=0.75
 
         if self.awaiting_left_up:
             match(self.current_interaction_type):
                 case ScrollToolInteractionType.SCROLL_WHEEL:
-                    selector_angles = angles - self.drag_angle+self.selector_size/2
-                    selector_angles -= TWO_PI*(selector_angles//TWO_PI)
+                    selector_angles = angle_unwrap(angles - self.drag_angle+self.selector_size/2)
 
-                    selection_mask = (selector_angles > 0) * (selector_angles < self.selector_size)
-                    selection_mask *= (squared_distances > self.selector_margin_inner_squared)
-                    selection_mask *= (squared_distances < self.selector_margin_outer_squared)
-                    selection_mask = np.repeat(selection_mask[:, :, np.newaxis], 3, axis=2)
+                    selector_mask = (
+                        (selector_angles >= 0) & (selector_angles <= self.selector_size)
+                        & (distances >= self.selector_edge_v_inner)
+                        & (distances <= self.selector_edge_v_outer)
+                    )
 
-                    cdata = np.where(selection_mask,selector_color,cdata)
+                    if self.selector_rounded_corners:
+                        scaled_angles = selector_angles/self.selector_size
+                        scaled_distance = inv_lerp(self.selector_edge_v_inner, self.selector_edge_v_outer, distances)
+
+                        rounding_h_mask = (
+                            (scaled_angles >= 0) & (scaled_angles <= 1)
+                            & (scaled_distance >= self.selector_rounding_fac_v) & (scaled_distance <= 1-self.selector_rounding_fac_v)
+                        )
+                        rounding_v_mask = (
+                                (scaled_angles >= self.selector_rounding_fac_h/2) & (scaled_angles <= 1-self.selector_rounding_fac_h/2)
+                                & (scaled_distance >= 0) & (scaled_distance <= 1)
+                            )
+
+                        corners_mask = (~rounding_h_mask & ~rounding_v_mask) & selector_mask
+
+                        inner_corners = corners_mask & (scaled_distance <= 0.5)
+                        outer_corners = corners_mask & (scaled_distance >= 0.5)
+
+                        corner_i_a = inner_corners & (scaled_angles <= 0.5) 
+                        corner_i_b = inner_corners & (scaled_angles >= 0.5)
+                        corner_o_a = outer_corners & (scaled_angles <= 0.5)
+                        corner_o_b = outer_corners & (scaled_angles >= 0.5)
+
+                        rounded_corner_i_a = corner_i_a & (scaled_distance >= lerp(0,self.selector_rounding_fac_v, 1-ease_circ(inv_lerp(0,self.selector_rounding_fac_h/2,scaled_angles))))
+                        rounded_corner_i_b = corner_i_b & (scaled_distance >= lerp(0,self.selector_rounding_fac_v, 1-ease_circ(inv_lerp(1,1-self.selector_rounding_fac_h/2,scaled_angles))))
+                        rounded_corner_o_a = corner_o_a & (scaled_distance <= lerp(1-self.selector_rounding_fac_v,1, ease_circ(inv_lerp(0,self.selector_rounding_fac_h/2,scaled_angles))))
+                        rounded_corner_o_b = corner_o_b & (scaled_distance <= lerp(1-self.selector_rounding_fac_v,1, ease_circ(inv_lerp(1,1-self.selector_rounding_fac_h/2,scaled_angles))))
+
+                        selector_mask = (selector_mask & ~corners_mask)
+                        selector_mask[corner_i_a] |= rounded_corner_i_a[corner_i_a]
+                        selector_mask[corner_i_b] |= rounded_corner_i_b[corner_i_b]
+                        selector_mask[corner_o_a] |= rounded_corner_o_a[corner_o_a]
+                        selector_mask[corner_o_b] |= rounded_corner_o_b[corner_o_b]
+
+                    selector_mask = np.repeat(selector_mask[:, :, np.newaxis], 3, axis=2)
+                    cdata = np.where(selector_mask,selector_color,cdata)
                 case ScrollToolInteractionType.SCROLL_WHEEL:
                     cdata[close_button_mask] = bg_colors[1]
 
@@ -300,12 +369,9 @@ class ScrollToolFrame(wx.Frame):
         memdc = wx.MemoryDC(bmp)
         self.layered_update(memdc, self.blend_func)
 
-def show_frame(size,radius,hole_pct):
+def show_frame(size,radius,hole_fac):
     cursor_pos = win32gui.GetCursorPos()
-    print(cursor_pos)
     active_window_hwnd = win32gui.WindowFromPoint(cursor_pos)
-    print(active_window_hwnd)
-    print(win32gui.GetWindowText(active_window_hwnd))
 
     scroll_pos = get_mouse_position_in_window(active_window_hwnd)
 
@@ -316,7 +382,7 @@ def show_frame(size,radius,hole_pct):
         scroll_pos= scroll_pos,
         size=size,
         radius = radius,
-        hole_pct = hole_pct,
+        hole_fac = hole_fac,
     )
     frame.Show(True)
     frame.Refresh(True)
