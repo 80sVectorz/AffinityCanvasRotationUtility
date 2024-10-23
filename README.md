@@ -22,5 +22,6 @@ You'll need to configure the execution logic yourself. One example is having it 
 
 # Future plans
 Things I already plan to implement are: 
+- Automatic updates and simple zip extraction based instalation
 - `.toml` configuration file support so you can customize colors dimensions, sensitivity, etc.
 - A user-friendly tool to generate configs for people who'd rather not edit a `.toml` file (This'll have a lower priority)
